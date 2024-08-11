@@ -3,6 +3,10 @@
 Welcome to the **GitHub to Teams PR Alerts** Action! This GitHub Action is designed to notify your Microsoft Teams channel whenever a Pull Request is reviewed or requested on GitHub, making collaboration smoother and more efficient.
 [日本語版のREADMEはこちら](README_ja.md)
 
+
+![usage sample](readme-images/sample.png)
+
+
 ## Features 🌟
 
 - **Review Request Notifications:** Sends a notification to Teams when a Pull Request is requested.
