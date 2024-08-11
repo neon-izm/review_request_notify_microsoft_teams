@@ -1,0 +1,149 @@
+name: Notify Teams on Review Request
+
+on:
+  pull_request:
+    types: [ review_requested ]
+    # develop向けのPRだけ動かしたい時はコメントアウト
+    #branches:
+    #  - develop
+  pull_request_review:
+    types: [ submitted ]
+
+jobs:
+  notify_teams:
+    name: 😎レビュー担当者に通知 review notify to teams😎
+    runs-on: ubuntu-latest
+    env:
+      # デバッグ時にfalseにすることもできる
+      SEND_TO_TEAMS: true  # Control flag to enable/disable sending notifications
+    steps:
+      - name: Check TEAMS_WEBHOOK_URL
+        run: |
+          if [ -z "${{ secrets.TEAMS_WEBHOOK_URL }}" ]; then
+            echo "::error file=${GITHUB_REPOSITORY}/settings/secrets/actions::TEAMS_WEBHOOK_URLが指定されていません。リポジトリのActionのSecretsに登録してください https://github.com/${GITHUB_REPOSITORY}/settings/secrets/actions 。"
+            exit 1
+          fi
+      - name: Define user mappings
+        run: |
+          # Start with an empty JSON object
+          USER_EMAIL_MAPPING_JSON='{'
+          # Append each user-email pair
+          USER_EMAIL_MAPPING_JSON+=' "some-github-username1": "someuser1@example.com",'
+          USER_EMAIL_MAPPING_JSON+=' "this_is_sample_name": "awesomeuser2@example.com",'
+          USER_EMAIL_MAPPING_JSON+=' "please-add-your-teams-usernames": "something3@example.com",'
+          # メンバー分のgithubアカウントとTeamsのメールアドレスペアを追加して下さい
+          # you can add members like this
+          # USER_EMAIL_MAPPING_JSON+=' "john_smith": "email4@example.com",'
+
+          # Close the JSON object
+          USER_EMAIL_MAPPING_JSON+='"unknown": "unknown@example.com" }'
+          
+          echo "USER_EMAIL_MAPPING_JSON=$USER_EMAIL_MAPPING_JSON" >> $GITHUB_ENV
+          echo "current USER_EMAIL_MAPPING_JSON=${{ env.USER_EMAIL_MAPPING_JSON }}"
+
+      - name: Check conditions for early termination
+        # approve時は通知しない(don't notify when approved)
+        id: check_conditions
+        run: |
+          REVIEW_STATE=$(jq --raw-output .review.state $GITHUB_EVENT_PATH)
+          REVIEW_ACTION=${{ github.event.action }}
+          if [[ "$REVIEW_STATE" != "changes_requested" && "$REVIEW_ACTION" != "review_requested" ]]; then
+            echo "Nothing to do, exiting..."
+            echo "skip_remaining_steps=true" >> $GITHUB_ENV
+          fi
+      - name: Get usernames and map to emails
+        if: env.skip_remaining_steps != 'true'
+        run: |
+          # Extract usernames
+          PR_OWNER_USERNAME=$(jq --raw-output .pull_request.user.login $GITHUB_EVENT_PATH)
+          echo "Pull Request Owner's Username: $PR_OWNER_USERNAME"
+          PR_REVIEWERS_JSON=$(jq --raw-output '.pull_request.requested_reviewers | map(.login)' $GITHUB_EVENT_PATH)
+          echo "Reviewers' usernames: $PR_REVIEWERS_JSON"
+          
+          # Map usernames to emails
+          PR_OWNER_EMAIL=$(echo "$USER_EMAIL_MAPPING_JSON" | jq -r --arg username "$PR_OWNER_USERNAME" '.[$username]')
+          PR_REVIEWERS_EMAILS=$(echo "$PR_REVIEWERS_JSON" | jq -r --argjson userMap "$USER_EMAIL_MAPPING_JSON" '[.[] as $username | "<at>" + ($userMap[$username] // "unknown@example.com") + "</at>"] | join(", ")')
+          
+          # Handle unknown usernames
+          if [[ -z "$PR_OWNER_EMAIL" ]]; then
+            PR_OWNER_EMAIL="unknown@example.com"
+          fi
+
+          echo "PR_OWNER_EMAIL=$PR_OWNER_EMAIL" >> $GITHUB_ENV
+          echo "PR_REVIEWERS_EMAILS=$PR_REVIEWERS_EMAILS" >> $GITHUB_ENV
+          echo "Resolved PR Owner Email: $PR_OWNER_EMAIL"
+          echo "Resolved Reviewers' Emails: $PR_REVIEWERS_EMAILS"
+      - name: Get PR title and URL
+        if: env.skip_remaining_steps != 'true'
+        run: |
+          PR_TITLE_RAW=$(jq --raw-output .pull_request.title $GITHUB_EVENT_PATH || echo "null")
+          PR_URL_RAW=$(jq --raw-output .pull_request.html_url $GITHUB_EVENT_PATH || echo "null")
+          USER_NAME_RAW=$(jq --raw-output .pull_request.user.login $GITHUB_EVENT_PATH || jq --raw-output .issue.user.login $GITHUB_EVENT_PATH || echo "Someone")
+          
+          if [[ "$PR_TITLE_RAW" == "null" || -z "$PR_TITLE_RAW" ]]; then
+            echo "PR_TITLE=Sample Title: テスト" >> $GITHUB_ENV
+          else
+            echo "PR_TITLE=PR:$PR_TITLE_RAW" >> $GITHUB_ENV
+          fi
+          
+          if [[ "$PR_URL_RAW" == "null" || -z "$PR_URL_RAW" ]]; then
+            echo "PR_URL=https://example.com" >> $GITHUB_ENV
+          else
+            echo "PR_URL=$PR_URL_RAW" >> $GITHUB_ENV
+          fi
+          
+          if [[ "$USER_NAME_RAW" == "null" || -z "$USER_NAME_RAW" ]]; then
+            echo "USER_NAME=Someone" >> $GITHUB_ENV
+          else
+            echo "USER_NAME=$USER_NAME_RAW" >> $GITHUB_ENV
+          fi
+
+      - name: Prepare and encode adaptive card
+        if: env.skip_remaining_steps != 'true'
+        run: |
+          adaptive_card='{
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+              {
+                "type": "TextBlock",
+                "text": "${{ env.PR_TITLE }}",
+                "size": "medium",
+                "weight": "bolder"
+              },
+              {
+                "type": "TextBlock",
+                "text": "PR作成者:${{ env.PR_OWNER_USERNAME }} <at>${{env.PR_OWNER_EMAIL}}</at>さん。\nレビュアー: ${{env.PR_REVIEWERS_EMAILS}}さん",
+                "size": "medium"
+              }
+            ],
+            "actions": [
+              {
+                "type": "Action.OpenUrl",
+                "title": "Open in Github",
+                "url": "${{ env.PR_URL }}"
+              }
+            ]
+          }'
+          echo "$adaptive_card" > adaptive_card.json
+          # Encode adaptive card with jq
+          adaptive_card_encoded=$(jq -n \
+            --argjson card "$(cat adaptive_card.json)" \
+            '{type: "message", attachments: [{contentType: "application/vnd.microsoft.card.adaptive", content: $card}]}')
+          echo "$adaptive_card_encoded" > adaptive_card_encoded.json
+      
+      - name: Upload adaptive card JSON as artifact
+        if: env.skip_remaining_steps != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: adaptive-card-encoded
+          path: adaptive_card_encoded.json
+
+      - name: Send notification to Microsoft Teams
+        if: env.skip_remaining_steps != 'true' && env.SEND_TO_TEAMS == 'true'
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' --data "@adaptive_card_encoded.json" $TEAMS_WEBHOOK_URL
+          echo "Notification sent to Microsoft Teams"
