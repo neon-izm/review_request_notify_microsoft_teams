@@ -25,7 +25,7 @@ GitHubのプルリクエストがレビューされたりリクエストされ�
    - シークレットの名前を `TEAMS_WEBHOOK_URL` に設定し、Microsoft TeamsのIncomingWebhook URLを貼り付けます。
 
 2. **ユーザーマッピングの定義：**
-   - ワークフローファイル内で `USER_EMAIL_MAPPING_JSON` を調整し、GitHubユーザー名からTeamsアカウントのメールアドレスへのマッピングを含めます。
+   - [ワークフローファイル](.github/workflows/github-to-teams-pr-alerts.yml)内で `USER_EMAIL_MAPPING_JSON` を調整し、GitHubユーザー名からTeamsアカウントのメールアドレスへのマッピングを含めます。
    - 形式例：`"github_username": "email@example.com"`
 
 3. **通知の有効/無効化：**
